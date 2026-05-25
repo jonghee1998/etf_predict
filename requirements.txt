@@ -1,0 +1,10 @@
+finance_datareader
+numpy
+pandas
+Requests
+scikit_learn
+statsmodels
+plotly
+ipykernel
+optuna
+openpyxl
