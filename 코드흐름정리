@@ -1,0 +1,76 @@
+###########################################################################
+- lib.py
+###########################################################################
+
+-- 1. load_price_data(ticker, start_date="2020-01-01", end_date=None)
+  --> 선택한 티커에 대해 start_date ~ end_date까지 ohlcv 데이터 수집 
+  --> 소스는 fdr, end_date가 none일 경우 최신날짜까지
+
+
+-- 2. make_target_etf_features(etf_df, prefix)
+  --> 선택한 티커에 대한 파생지표 생성
+  --> 파생지표 대상은 Adj Close
+  --> 파생지표: 
+      수익률(ret) 1,5,20
+      이동평균(ma) 1,5,20
+      변동성(vol) 20
+      거래량비율(vol) 20
+      
+
+-- 3. make_external_features(raw_df, name, feature_type="price")
+
+-- make_base_feature_dataset(
+    etf_code,
+    external_tickers,
+    external_feature_types,
+    start_date="2020-01-01",
+    end_date=None
+):
+
+-- reduce_features_by_vif(
+    df,
+    feature_cols,
+    vif_threshold=30.0,
+    date_col="Date",
+    verbose=True
+)
+
+-- add_target_column(
+    df,
+    close_col,
+    n_days=5,
+    threshold=0.05,
+    target_col=None
+):
+
+-- find_best_lag_by_feature(
+    df,
+    feature_cols,
+    target_col,
+    lag_days=[1, 3, 5, 10, 20],
+    date_col="Date",
+    method="corr"
+):
+
+-- make_lagged_dataset_by_best_lag(
+    df,
+    best_lag_df,
+    target_col,
+    close_col,
+    n_days=5,
+    date_col="Date"
+):
+
+-- run_rf_permutation_importance_in_sample(
+    lagged_df,
+    feature_cols,
+    target_col,
+    date_col="Date",
+    close_col=None,
+    n_rf_runs=3,
+    n_repeats=10,
+    random_state=42
+):
+
+-- split_lagged_feature_name(feature_name)
+
