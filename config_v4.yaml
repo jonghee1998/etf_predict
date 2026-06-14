@@ -1,0 +1,110 @@
+# ============================================================
+# ETF OOS Simulation v4 — Run 8: 2-Fold Cross-Validation
+# Fold A: 약세장 2022-H2, Fold B: 검증기간 2024-07~2025-06
+# 두 기간 모두 precision >= 70% 달성하는 모델 탐색
+# ============================================================
+
+experiment:
+  name: "v4_run8_twofold_cv"
+
+etf:
+  code: "SMH"
+  start_date: "2017-01-01"
+  end_date: null
+
+base_date: "2026-05-31"
+
+periods:
+  optuna_valid_months: 12    # Fold B: 2024-07 ~ 2025-06
+  sim_test_months: 11
+
+target:
+  n_days_candidates: [5, 10, 20]
+  return_threshold_candidates: [0.05, 0.06, 0.07, 0.08]
+
+features:
+  vif_threshold: 30.0
+  feature_select_years: 2    # ★ 2년: 2022~2024 패턴 포함
+  lag_days: [1, 2, 3, 5, 10, 20]
+  top_n_max: 40
+  use_rsi: true
+  rsi_period: 14
+  use_macd: true
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  use_bollinger: true
+  bollinger_period: 20
+  bollinger_std: 2.0
+  use_atr: true
+  atr_period: 14
+  use_52w: true
+
+external_tickers:
+  QQQ:  "QQQ"
+  SPY:  "SPY"
+  SOXX: "SOXX"
+  NVDA: "NVDA"
+  TSM:  "TSM"
+  VIX:  "^VIX"
+  TNX:  "^TNX"
+  DXY:  "DXY"
+  GOLD: "GC=F"
+  OIL:  "CL=F"
+
+external_feature_types:
+  QQQ:  "price"
+  SPY:  "price"
+  SOXX: "price"
+  NVDA: "price"
+  TSM:  "price"
+  VIX:  "risk"
+  TNX:  "rate"
+  DXY:  "price"
+  GOLD: "price"
+  OIL:  "price"
+
+importance:
+  random_state: 42
+  n_rf_runs: 5
+  n_repeats: 5
+
+stage1:
+  objective_metric: "precision_lift_recall"
+  min_valid_eval_count: 20
+  min_valid_pred_1_count: 3
+  model_name: "random_forest"
+  n_estimators: 300
+  top_n_fixed: 20
+  n_seeds: 3
+
+optuna_stage2:
+  n_trials: 500           # ★ 더 많은 trials (2-fold CV로 조건 엄격)
+  objective_metric: "precision_hard"
+  precision_floor: 0.65   # ★ 낮춰서 더 많은 모델 탐색 가능
+  min_valid_eval_count: 15
+  min_valid_pred_1_count: 3  # ★ 3 (약세장에서 이벤트 적을 수 있음)
+  model_candidates:
+    - "random_forest"
+    - "extra_trees"
+    - "xgboost"
+    - "lightgbm"
+    - "hist_gradient_boosting"
+  top_n_range: [8, 40]
+  pred_threshold_range: [0.45, 0.90]
+  pred_threshold_step: 0.02
+
+stage3:
+  precision_target: 0.80
+  min_pred_count: 3
+  ensemble_top_k: 5
+  use_average_proba: true
+  walkforward_halves: false
+
+simulation:
+  initial_cash: 1_000_000
+  buy_ratio: 0.05
+  min_cash_ratio: 0.30
+
+cache:
+  load_from_cache: true
