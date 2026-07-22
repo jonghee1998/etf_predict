@@ -597,7 +597,7 @@ function badges(s) {
   if (s.fscore !== null && s.fmax >= 7 && s.fscore >= 7) b.push([`F점수 우수 ${s.fscore}/${s.fmax}`, "up", "재무제표 9개 건강검진 항목 중 대부분 통과 — 재무 상태가 탄탄"]);
   else if (s.fscore !== null && s.fmax >= 7 && s.fscore <= 3) b.push([`F점수 취약 ${s.fscore}/${s.fmax}`, "dn", "재무제표 건강검진에서 통과 항목이 적음 — 재무 상태 주의"]);
   if (s.zscore !== null && !isFinSector(s) && s.zscore < 1.81) b.push(["Z점수 위험", "dn", "Altman Z-Score 1.81 미만 — 통계적으로 부도 위험이 있는 구간"]);
-  if (s.sfloat !== null && s.sfloat > 0.10) b.push([`공매도 ${fmtPct(s.sfloat,0)}`, "dn", "유통 주식의 10% 이상이 하락 베팅 — 비관론이 많다는 뜻 (가끔 쇼트스퀴즈로 급등하기도)"]);
+  if (s.foreign_net5 > 0 && s.inst_net5 > 0) b.push(["외인·기관 동반매수", "up", "최근 5거래일 외국인과 기관이 모두 순매수"]);
   if (s.rsi14 !== null && s.rsi14 > 75) b.push(["RSI 과열", "nu", "단기 과열 구간(RSI 75+) — 단기 조정이 나올 수 있는 자리"]);
   else if (s.rsi14 !== null && s.rsi14 < 30) b.push(["RSI 과매도", "nu", "단기 과매도 구간(RSI 30-) — 반등이 나오곤 하는 자리"]);
   if (s.vol60 !== null && s.vol60 > 0.55) b.push(["고변동성", "dn", "연환산 변동성 55% 이상 — 하루 등락이 큰 험한 종목"]);
@@ -803,7 +803,9 @@ function showDetail(sym) {
   const fTxt = s.fscore === null ? "–" : `${s.fscore} / ${s.fmax}`;
   const fCls = s.fscore === null ? "" : (s.fmax >= 7 && s.fscore >= 7) ? "pos" : (s.fmax >= 7 && s.fscore <= 3) ? "neg" : "";
   const recTxt = s.rec === null ? "–" :
-    `${fmtNum(s.rec,1)} (${s.rec <= 1.5 ? "강력매수" : s.rec <= 2.5 ? "매수" : s.rec <= 3.5 ? "보유" : "매도"})`;
+    `${fmtNum(s.rec,2)} (${s.rec >= 4 ? "매수" : s.rec >= 3 ? "중립" : "매도"})`;
+  const fmtShares = v => v === null || v === undefined ? "–" :
+    `${v >= 0 ? "+" : ""}${Math.round(v).toLocaleString("ko-KR")}주`;
   el("dStats").innerHTML =
     grp("밸류에이션", "FnGuide (국내 연결 재무)",
       st("시가총액", fmtCap(s.mcap), "", "mcap") +
@@ -812,6 +814,7 @@ function showDetail(sym) {
       st("PSR", fmtNum(s.psr,1), "", "psr") +
       st("EV/EBITDA", fmtNum(s.evebitda,1), "", "evebitda") +
       st("PEG", fmtNum(s.peg,2), "", "peg") +
+      st("예상 EPS 성장률", s.eps_growth===null||s.eps_growth===undefined?"–":fmtPct(s.eps_growth,1), cls(s.eps_growth), "peg") +
       st("FCF 수익률", s.fcfy===null?"–":fmtPct(s.fcfy,1), cls(s.fcfy), "fcfy") +
       st("배당수익률", s.divy===null?"–":fmtNum(s.divy,2)+"%", "", "divy")) +
     grp("퀄리티 · 재무건전성", "FnGuide 연결 재무제표 기반 자체 계산",
@@ -837,13 +840,13 @@ function showDetail(sym) {
       st("12개월 최대낙폭", fmtPct(s.mdd12,0), cls(s.mdd12), "mdd12") +
       st("12개월 Sharpe", fmtNum(s.sharpe12,2), s.sharpe12 > 1 ? "pos" : "", "sharpe") +
       st("베타", fmtNum(s.beta,2), "", "beta")) +
-    grp("수급 · 애널리스트 · 이벤트", "국내 데이터 제공 시 표시",
-      st("공매도 비중 (유통주식)", s.sfloat===null?"–":fmtPct(s.sfloat,1), s.sfloat > 0.10 ? "neg" : "", "sfloat") +
-      st("기관 보유", s.inst===null?"–":fmtPct(s.inst,0), "", "inst") +
-      st("내부자 보유", s.insider===null?"–":fmtPct(s.insider,1), "", "insider") +
+    grp("수급 · 애널리스트", "네이버 금융 · FnGuide 컨센서스",
+      st("외국인 보유율", s.foreign===null||s.foreign===undefined?"–":fmtPct(s.foreign,2), "", "inst") +
+      st("외국인 순매수 (5일)", fmtShares(s.foreign_net5), cls(s.foreign_net5), "inst") +
+      st("기관 순매수 (5일)", fmtShares(s.inst_net5), cls(s.inst_net5), "inst") +
       st("목표주가 / 여력", s.tgt===null?"–":`${fmtWon(s.tgt)} / ${fmtPct(upside,0)}`, cls(upside), "tgt") +
-      st(`투자의견 (${s.nanal||0}명)`, recTxt, s.rec !== null && s.rec <= 2 ? "pos" : "", "rec") +
-      st("다음 실적발표", s.earnings ? s.earnings.slice(0,10) : "–", "", "earnings"));
+      st("투자의견 컨센서스", recTxt, s.rec !== null && s.rec >= 4 ? "pos" : "", "rec") +
+      st("컨센서스 EPS", s.consensus_eps?fmtWon(s.consensus_eps):"–", "", "earnings"));
   const c = s.px.c;
   drawLine(el("dChart"), s.px.d, [
     { ys: c, color: "var(--acc)", w: 2, name: "종가" },

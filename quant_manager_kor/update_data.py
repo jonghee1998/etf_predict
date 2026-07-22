@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+from lxml import html
 
 ROOT = Path(__file__).parent
 OUT = ROOT / "data.js"
@@ -29,6 +30,7 @@ NULL_STOCK = ["pe", "fpe", "pbr", "psr", "evebitda", "peg", "fcfy", "divy",
               "beta", "sfloat", "inst", "insider", "tgt", "rec", "nanal", "earnings"]
 HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantManagerKR/1.0)"}
 FNGUIDE_BASE = "https://comp.fnguide.com/SVO2/ASP"
+NAVER_ITEM = "https://finance.naver.com/item/main.naver"
 
 
 def _number(value):
@@ -83,6 +85,63 @@ def _ratio(numerator, denominator):
 
 def _growth(current, previous):
     return current / previous - 1 if current is not None and previous not in (None, 0) else None
+
+
+def _text_number(text):
+    match = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", str(text or ""))
+    return _number(match.group(0)) if match else None
+
+
+def collect_naver_market(code):
+    """네이버 금융의 국내 컨센서스·외국인/기관 수급 요약."""
+    response = requests.get(NAVER_ITEM, params={"code": code}, headers=HTTP_HEADERS, timeout=20)
+    response.raise_for_status()
+    root = html.fromstring(response.content)
+    out = {}
+
+    def by_id(element_id):
+        node = root.get_element_by_id(element_id, None)
+        return _text_number(node.text_content()) if node is not None else None
+
+    out["pe"] = by_id("_per")
+    out["fpe"] = by_id("_cns_per")
+    out["pbr"] = by_id("_pbr")
+    trailing_eps, consensus_eps = by_id("_eps"), by_id("_cns_eps")
+    out["consensus_eps"] = consensus_eps
+    out["eps_growth"] = _growth(consensus_eps, trailing_eps)
+    if out["fpe"] is not None and out["eps_growth"] is not None and out["eps_growth"] > 0:
+        out["peg"] = out["fpe"] / (out["eps_growth"] * 100)
+
+    for table in root.xpath('//table'):
+        summary = (table.get("summary") or "") + " " + "".join(table.xpath('./caption//text()'))
+        rows = table.xpath('.//tr')
+        if "외국인한도주식수" in summary:
+            for tr in rows:
+                cells = [" ".join(c.itertext()).strip() for c in tr.xpath('./th|./td')]
+                if len(cells) >= 2 and "소진율" in cells[0]:
+                    value = _text_number(cells[1])
+                    out["foreign"] = None if value is None else value / 100
+        elif "투자의견 정보" in summary and rows:
+            cells = [" ".join(c.itertext()).strip() for c in rows[0].xpath('./th|./td')]
+            if len(cells) >= 2:
+                values = re.findall(r"\d[\d,]*(?:\.\d+)?", cells[1])
+                if values:
+                    out["rec"] = _number(values[0])
+                if len(values) > 1:
+                    out["tgt"] = _number(values[-1])
+        elif "외국인 기관" in summary:
+            foreign_net, institution_net = [], []
+            for tr in rows:
+                cells = [" ".join(c.itertext()).strip() for c in tr.xpath('./th|./td')]
+                if len(cells) >= 5 and re.fullmatch(r"\d\d/\d\d", cells[0]):
+                    foreign_net.append(_text_number(cells[3]))
+                    institution_net.append(_text_number(cells[4]))
+                if len(foreign_net) == 5:
+                    break
+            if foreign_net:
+                out["foreign_net5"] = sum(v for v in foreign_net if v is not None)
+                out["inst_net5"] = sum(v for v in institution_net if v is not None)
+    return out
 
 
 def _fnguide_tables(code, page):
@@ -185,6 +244,11 @@ def collect_fnguide(code, mcap):
         out["_dps"] = dps
         fcff = _value(inv, "FCFF", inv_col)
         out["fcfy"] = None if fcff is None or not mcap else (fcff * 100_000_000) / mcap
+    try:
+        # 최신 시장/컨센서스 값은 네이버 요약값을 우선한다.
+        out.update({k: v for k, v in collect_naver_market(code).items() if v is not None})
+    except Exception:
+        pass
     return {k: round(v, 6) if isinstance(v, float) and np.isfinite(v) else v for k, v in out.items()}
 
 
