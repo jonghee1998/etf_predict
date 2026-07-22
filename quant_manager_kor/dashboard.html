@@ -386,7 +386,8 @@ const fmtCap = v => {
   if (v >= 1e8) return Math.round(v/1e8).toLocaleString("ko-KR") + "억원";
   return Math.round(v/1e4).toLocaleString("ko-KR") + "만원";
 };
-const fmtB = v => v === null || v === undefined ? "–" : "$" + (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1)) + "B";
+const fmtB = v => v === null || v === undefined ? "–" :
+  Math.round(v * 10).toLocaleString("ko-KR") + "억원";
 const fmtWon = v => v === null || v === undefined ? "–" : Math.round(v).toLocaleString("ko-KR") + "원";
 const cls = v => v === null || v === undefined ? "" : v >= 0 ? "pos" : "neg";
 const ymdToISO = y => `${String(y).slice(0,4)}-${String(y).slice(4,6)}-${String(y).slice(6,8)}`;
@@ -762,7 +763,7 @@ function drawFin(container, fin) {
   let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
   for (const tv of niceTicks(lo, hi-pad, 4))
     svg += `<line class="gridline" x1="${mL}" x2="${W-mR}" y1="${y(tv).toFixed(1)}" y2="${y(tv).toFixed(1)}"/>
-            <text x="${mL-6}" y="${(y(tv)+4).toFixed(1)}" text-anchor="end">$${tv.toFixed(0)}B</text>`;
+            <text x="${mL-6}" y="${(y(tv)+4).toFixed(1)}" text-anchor="end">${fmtB(tv)}</text>`;
   fin.years.forEach((yr, g) => {
     const cx = mL + gw*(g+0.5);
     svg += `<text x="${cx.toFixed(1)}" y="${H-8}" text-anchor="middle">FY${yr}</text>`;
@@ -804,7 +805,7 @@ function showDetail(sym) {
   const recTxt = s.rec === null ? "–" :
     `${fmtNum(s.rec,1)} (${s.rec <= 1.5 ? "강력매수" : s.rec <= 2.5 ? "매수" : s.rec <= 3.5 ? "보유" : "매도"})`;
   el("dStats").innerHTML =
-    grp("밸류에이션", "Yahoo Finance",
+    grp("밸류에이션", "FnGuide (국내 연결 재무)",
       st("시가총액", fmtCap(s.mcap), "", "mcap") +
       st("PER (현재/선행)", `${fmtNum(s.pe,1)} / ${fmtNum(s.fpe,1)}`, "", "per") +
       st("PBR", fmtNum(s.pbr,1), "", "pbr") +
@@ -813,7 +814,7 @@ function showDetail(sym) {
       st("PEG", fmtNum(s.peg,2), "", "peg") +
       st("FCF 수익률", s.fcfy===null?"–":fmtPct(s.fcfy,1), cls(s.fcfy), "fcfy") +
       st("배당수익률", s.divy===null?"–":fmtNum(s.divy,2)+"%", "", "divy")) +
-    grp("퀄리티 · 재무건전성", "재무제표 기반 자체 계산 (Piotroski 2000 · Altman 1968) + Yahoo Finance",
+    grp("퀄리티 · 재무건전성", "FnGuide 연결 재무제표 기반 자체 계산",
       st("Piotroski F-Score", fTxt, fCls, "fscore") +
       st("Altman Z-Score", zTxt, zCls, "zscore") +
       st("ROE / ROA", `${s.roe===null?"–":fmtPct(s.roe,0)} / ${s.roa===null?"–":fmtPct(s.roa,0)}`, "", "roe") +
@@ -831,12 +832,12 @@ function showDetail(sym) {
       st("200일선", s.above_ma200===null?"–":s.above_ma200?"위 ⬆":"아래 ⬇", s.above_ma200?"pos":"neg", "ma200") +
       st("52주 고점 대비", fmtPct(s.from_high,1), cls(s.from_high), "fromhigh") +
       st("52주 범위", `${fmtWon(s.lo52)} ~ ${fmtWon(s.hi52)}`, "", "range52")) +
-    grp("리스크", "가격 데이터 자체 계산 + Yahoo Finance(베타)",
+    grp("리스크", "가격 데이터 자체 계산",
       st("60일 변동성 (연환산)", s.vol60===null?"–":fmtPct(s.vol60,0), "", "vol60") +
       st("12개월 최대낙폭", fmtPct(s.mdd12,0), cls(s.mdd12), "mdd12") +
       st("12개월 Sharpe", fmtNum(s.sharpe12,2), s.sharpe12 > 1 ? "pos" : "", "sharpe") +
       st("베타", fmtNum(s.beta,2), "", "beta")) +
-    grp("수급 · 애널리스트 · 이벤트", "Yahoo Finance",
+    grp("수급 · 애널리스트 · 이벤트", "국내 데이터 제공 시 표시",
       st("공매도 비중 (유통주식)", s.sfloat===null?"–":fmtPct(s.sfloat,1), s.sfloat > 0.10 ? "neg" : "", "sfloat") +
       st("기관 보유", s.inst===null?"–":fmtPct(s.inst,0), "", "inst") +
       st("내부자 보유", s.insider===null?"–":fmtPct(s.insider,1), "", "insider") +

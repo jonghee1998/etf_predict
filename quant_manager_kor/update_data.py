@@ -6,11 +6,15 @@ downloaded from KRX listings (FinanceDataReader) and Yahoo Finance prices.
 import argparse
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from io import StringIO
 from pathlib import Path
 
 import FinanceDataReader as fdr
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 
 ROOT = Path(__file__).parent
@@ -23,6 +27,186 @@ PERIODS = {"m1": 21, "m3": 63, "m6": 126, "m12": 252}
 NULL_STOCK = ["pe", "fpe", "pbr", "psr", "evebitda", "peg", "fcfy", "divy",
               "roe", "roa", "gm", "opm", "npm", "curr", "d2e", "revg", "earng",
               "beta", "sfloat", "inst", "insider", "tgt", "rec", "nanal", "earnings"]
+HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QuantManagerKR/1.0)"}
+FNGUIDE_BASE = "https://comp.fnguide.com/SVO2/ASP"
+
+
+def _number(value):
+    """HTML/DART 숫자를 안전하게 float로 바꾼다."""
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip().replace(",", "")
+    if not text or text in {"-", "--", "N/A", "nan"}:
+        return None
+    negative = text.startswith("(") and text.endswith(")")
+    text = text.strip("()")
+    try:
+        value = float(text)
+        return -value if negative else value
+    except ValueError:
+        return None
+
+
+def _label(value):
+    return re.sub(r"계산에 참여한 계정 펼치기|\s+", "", str(value))
+
+
+def _row(table, *names):
+    labels = table.iloc[:, 0].map(_label)
+    for name in names:
+        wanted = _label(name)
+        # 펼친 상세행에는 "PER순이익/..."처럼 산식 설명이 라벨 뒤에 붙는다.
+        hit = table.loc[(labels == wanted) | labels.str.startswith(wanted)]
+        if not hit.empty:
+            return hit.iloc[0]
+    return None
+
+
+def _value(table, name, column, *aliases):
+    row = _row(table, name, *aliases)
+    return None if row is None else _number(row.get(column))
+
+
+def _annual_columns(table):
+    # 첫 날짜열의 월이 해당 회사 결산월이다. 마지막에는 최신 누적 분기가
+    # 붙기도 하므로 같은 월만 고른다. 이 방식은 12월/3월 결산법인을 모두 처리한다.
+    dated = [c for c in table.columns[1:] if re.fullmatch(r"20\d\d/\d\d", str(c))]
+    if not dated:
+        return []
+    fiscal_month = str(dated[0])[-2:]
+    return [c for c in dated if str(c).endswith(f"/{fiscal_month}")]
+
+
+def _ratio(numerator, denominator):
+    return numerator / denominator if numerator is not None and denominator not in (None, 0) else None
+
+
+def _growth(current, previous):
+    return current / previous - 1 if current is not None and previous not in (None, 0) else None
+
+
+def _fnguide_tables(code, page):
+    params = {"pGB": 1, "gicode": f"A{code}", "cID": "", "MenuYn": "Y",
+              "ReportGB": "", "NewMenuID": 103 if page == "SVD_Finance" else 105,
+              "stkGb": 701}
+    response = requests.get(f"{FNGUIDE_BASE}/{page}.asp", params=params,
+                            headers=HTTP_HEADERS, timeout=20)
+    response.raise_for_status()
+    # 명시적으로 lxml을 사용하면 html5lib가 없는 최소 실행환경에서도 동작한다.
+    # FnGuide는 세부 계정을 접힌 행으로 제공한다. displayed_only=False가 없으면
+    # 이익잉여금·장기차입금 같은 Z/F-Score 필수 계정이 조용히 누락된다.
+    return pd.read_html(StringIO(response.text), flavor="lxml", displayed_only=False)
+
+
+def _piotroski_from_fnguide(inc, bal, cf, annual):
+    """FnGuide 연결 연간표로 계산 가능한 Piotroski 8개 항목을 계산한다."""
+    if len(annual) < 2:
+        return None, 0
+    old, new = annual[-2], annual[-1]
+    ni0, ni1 = _value(inc, "당기순이익", new), _value(inc, "당기순이익", old)
+    ta0, ta1 = _value(bal, "자산", new), _value(bal, "자산", old)
+    cfo0 = _value(cf, "영업활동으로인한현금흐름", new)
+    rev0, rev1 = _value(inc, "매출액", new), _value(inc, "매출액", old)
+    gp0, gp1 = _value(inc, "매출총이익", new), _value(inc, "매출총이익", old)
+    debt0 = _value(bal, "장기차입금", new, "장기금융부채")
+    debt1 = _value(bal, "장기차입금", old, "장기금융부채")
+    ca0, ca1 = _value(bal, "유동자산", new), _value(bal, "유동자산", old)
+    cl0, cl1 = _value(bal, "유동부채", new), _value(bal, "유동부채", old)
+    checks = []
+    if ni0 is not None and ta0: checks.append(ni0 / ta0 > 0)
+    if cfo0 is not None: checks.append(cfo0 > 0)
+    if None not in (ni0, ni1) and ta0 and ta1: checks.append(ni0 / ta0 > ni1 / ta1)
+    if None not in (cfo0, ni0): checks.append(cfo0 > ni0)
+    if None not in (debt0, debt1) and ta0 and ta1: checks.append(debt0 / ta0 <= debt1 / ta1)
+    if None not in (ca0, ca1) and cl0 and cl1: checks.append(ca0 / cl0 > ca1 / cl1)
+    if None not in (gp0, gp1) and rev0 and rev1: checks.append(gp0 / rev0 > gp1 / rev1)
+    if None not in (rev0, rev1) and ta0 and ta1: checks.append(rev0 / ta0 > rev1 / ta1)
+    return (int(sum(checks)), len(checks)) if checks else (None, 0)
+
+
+def collect_fnguide(code, mcap):
+    """FnGuide 국내 연결 재무/투자지표. 금액 원 단위, fin만 화면용 십억원 단위."""
+    finance = _fnguide_tables(code, "SVD_Finance")
+    invest = _fnguide_tables(code, "SVD_Invest")
+    if len(finance) < 5:
+        raise ValueError("FnGuide financial tables missing")
+    inc, qinc, bal, cf = finance[0], finance[1], finance[2], finance[4]
+    annual = _annual_columns(inc)[-4:]
+    if not annual:
+        raise ValueError("FnGuide annual columns missing")
+    latest = annual[-1]
+    revenue = _value(inc, "매출액", latest)
+    gross = _value(inc, "매출총이익", latest)
+    op = _value(inc, "영업이익", latest)
+    net = _value(inc, "당기순이익", latest)
+    assets = _value(bal, "자산", latest)
+    equity = _value(bal, "자본", latest)
+    liabilities = _value(bal, "부채", latest)
+    current_assets = _value(bal, "유동자산", latest)
+    current_liabilities = _value(bal, "유동부채", latest)
+
+    out = {"fin": {"years": [str(c)[:4] for c in annual]}}
+    for key, name in (("revenue", "매출액"), ("op", "영업이익"), ("net", "당기순이익")):
+        # FnGuide 금액 단위는 억원. 차트 공통 단위인 십억원으로 변환한다.
+        out["fin"][key] = [None if (v := _value(inc, name, c)) is None else round(v / 10, 3)
+                            for c in annual]
+    out.update(roe=_ratio(net, equity), roa=_ratio(net, assets), gm=_ratio(gross, revenue),
+               opm=_ratio(op, revenue), npm=_ratio(net, revenue),
+               curr=_ratio(current_assets, current_liabilities),
+               d2e=None if liabilities is None or not equity else liabilities / equity * 100)
+
+    qcols = [c for c in qinc.columns[1:] if re.fullmatch(r"20\d\d/\d\d", str(c))]
+    if qcols:
+        qcol = qcols[-1]
+        out["revg"] = _growth(_value(qinc, "매출액", qcol), _value(qinc, "매출액", "전년동기"))
+        out["earng"] = _growth(_value(qinc, "당기순이익", qcol), _value(qinc, "당기순이익", "전년동기"))
+
+    out["fscore"], out["fmax"] = _piotroski_from_fnguide(inc, bal, cf, annual)
+    retained = _value(bal, "이익잉여금(결손금)", latest, "이익잉여금")
+    if None not in (assets, liabilities, current_assets, current_liabilities,
+                    retained, op, revenue) and assets and liabilities and mcap:
+        # 재무제표와 동일한 억원 단위로 시가총액을 맞춘 원형 Altman Z-Score.
+        mcap_eok = mcap / 100_000_000
+        out["zscore"] = round(1.2 * (current_assets-current_liabilities) / assets
+                              + 1.4 * retained / assets + 3.3 * op / assets
+                              + 0.6 * mcap_eok / liabilities + revenue / assets, 2)
+    else:
+        out["zscore"] = None
+
+    if len(invest) > 1:
+        inv = invest[1]
+        inv_cols = [c for c in inv.columns[1:] if re.fullmatch(r"20\d\d/\d\d", str(c))]
+        inv_col = latest if latest in inv_cols else inv_cols[-1]
+        for key, name in (("pe", "PER"), ("pbr", "PBR"), ("psr", "PSR"),
+                          ("evebitda", "EV/EBITDA")):
+            out[key] = _value(inv, name, inv_col)
+        dps = _value(inv, "DPS(보통주,현금)(원)", inv_col)
+        out["divy"] = None  # 현재가가 수집된 뒤 아래에서 계산
+        out["_dps"] = dps
+        fcff = _value(inv, "FCFF", inv_col)
+        out["fcfy"] = None if fcff is None or not mcap else (fcff * 100_000_000) / mcap
+    return {k: round(v, 6) if isinstance(v, float) and np.isfinite(v) else v for k, v in out.items()}
+
+
+def collect_financials(stocks, workers=8):
+    """네트워크 지연을 줄이되 공급사에 무리가 가지 않는 제한된 병렬 수집."""
+    meta = stocks.set_index("Code")
+    results, failures = {}, {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        jobs = {pool.submit(collect_fnguide, code, int(meta.loc[code, "Marcap"])): code
+                for code in stocks.Code}
+        for n, future in enumerate(as_completed(jobs), 1):
+            code = jobs[future]
+            try:
+                results[code] = future.result()
+            except Exception as exc:
+                failures[code] = str(exc)[:100]
+            if n % 25 == 0:
+                print(f"   FnGuide {n}/{len(jobs)}")
+            time.sleep(0.02)
+    if failures:
+        print(f"   ⚠ FnGuide 일부 실패 {len(failures)}개: {list(failures)[:10]}")
+    return results
 
 
 def ticker(code):
@@ -127,6 +311,8 @@ def load_universes():
 def collect_describe(stocks, etfs):
     symbols = list(stocks.Code) + list(etfs.Symbol)
     close = price_frame(symbols, "15mo")
+    print("국내 연결 재무·투자지표 수집 (FnGuide)...")
+    financials = collect_financials(stocks)
     stock_meta = stocks.set_index("Code").to_dict("index")
     etf_meta = etfs.set_index("Symbol").to_dict("index")
 
@@ -140,7 +326,13 @@ def collect_describe(stocks, etfs):
         row = {"sym": code, "name": meta["Name"], "sector": stock_sector(industry),
             "industry": industry, "mcap": int(meta["Marcap"]), "summary": products,
             "fin": None, "fscore": None, "fmax": 0, "zscore": None}
-        row.update({k: None for k in NULL_STOCK}); row.update(metrics(close[code])); row["px"] = px_payload(close[code])
+        row.update({k: None for k in NULL_STOCK})
+        row.update(financials.get(code, {}))
+        row.update(metrics(close[code]))
+        dps = row.pop("_dps", None)
+        if dps is not None and row["last"]:
+            row["divy"] = round(dps / row["last"] * 100, 4)
+        row["px"] = px_payload(close[code])
         stock_rows[code] = row
 
     etf_rows = {}
